@@ -1,0 +1,42 @@
+trigger: none
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  backendResourceGroup: rg-tfstate
+  backendStorageAccount: tfdemo12345abc
+  backendContainer: tfstate
+  location: australiacentral
+
+steps:
+
+- checkout: self
+
+- task: AzureCLI@2
+  displayName: Create Terraform Backend
+  inputs:
+    azureSubscription: 'YulongLab'
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      az group create \
+        --name $(backendResourceGroup) \
+        --location "$(location)"
+      
+      az storage account create \
+        --name $(backendStorageAccount) \
+        --resource-group $(backendResourceGroup) \
+        --location "$(location)" \
+        --sku Standard_LRS
+      
+      storageKey=$(az storage account keys list \
+        --resource-group $(backendResourceGroup) \
+        --account-name $(backendStorageAccount) \
+        --query "[0].value" \
+        -o tsv)
+      
+      az storage container create \
+        --name $(backendContainer) \
+        --account-name $(backendStorageAccount) \
+        --account-key $storageKey

@@ -1,0 +1,135 @@
+trigger: none
+
+pool:
+  vmImage: ubuntu-latest
+
+parameters:
+- name: action
+  displayName: Terraform Action
+  type: string
+  default: apply
+  values:
+  - apply
+  - destroy
+
+variables:
+  workingDirectory: $(Build.SourcesDirectory)/Terraform/demo
+
+steps:
+
+- checkout: self
+
+- task: TerraformInstaller@1
+  displayName: Install Terraform
+  inputs:
+    terraformVersion: latest
+
+- task: AzureCLI@2
+  displayName: Terraform Init
+  inputs:
+    azureSubscription: 'YulongLab'
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      terraform init \
+        -backend-config="resource_group_name=rg-tfstate" \
+        -backend-config="storage_account_name=tfdemo12345abc" \
+        -backend-config="container_name=tfstate" \
+        -backend-config="key=demo.tfstate"
+    workingDirectory: '$(workingDirectory)'
+
+#=========================
+#Apply tf
+#=========================
+
+- ${{ if eq(parameters.action, 'apply') }}:
+
+  - task: AzureCLI@2
+    displayName: Terraform Plan
+    inputs:
+      azureSubscription: 'YulongLab'
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: 'terraform plan -out=tfplan'
+      workingDirectory: '$(workingDirectory)'
+
+  - task: AzureCLI@2
+    displayName: Terraform Apply
+    inputs:
+      azureSubscription: 'YulongLab'
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: 'terraform apply -auto-approve tfplan'
+      workingDirectory: '$(workingDirectory)'
+
+#=========================
+#run tests
+#=========================
+
+  - task: AzureCLI@2
+    displayName: Validate Deployed VMs
+    inputs:
+      azureSubscription: 'YulongLab'
+      scriptType: 'pscore'
+      scriptLocation: 'inlineScript'
+      workingDirectory: '$(workingDirectory)'
+      inlineScript: |
+        $vmNames = terraform output -json vm_names | ConvertFrom-Json
+
+        Write-Host "Validating expected VMs in RG: rg-demo-australiaeast"
+        Write-Host "Terraform returned VM list:"
+        $vmNames
+
+        $failed = $false
+
+        foreach ($vm in $vmNames) {
+
+            Write-Host "Checking expected VM: $vm"
+
+            $exists = az vm list `
+              --resource-group rg-demo-australiaeast `
+              --query "[?name=='$vm'] | length(@)" `
+              -o tsv
+
+            if ($exists -eq 0) {
+                Write-Host "ERROR: VM $vm does NOT exist"
+                $failed = $true
+                continue
+            }
+
+            $status = az vm get-instance-view `
+              --resource-group rg-demo-australiaeast `
+              --name $vm `
+              --query "instanceView.statuses[1].displayStatus" `
+              -o tsv
+
+            Write-Host "$vm status: $status"
+
+            if ($status -notmatch "running") {
+                Write-Host "ERROR: VM $vm is not running"
+                $failed = $true
+            }
+        }
+
+        if ($failed) {
+            Write-Host "VM validation FAILED"
+            exit 1
+        }
+
+        Write-Host "All expected VMs exist and are running"
+
+#=========================
+#destroy func
+#=========================
+
+- ${{ if eq(parameters.action, 'destroy') }}:
+
+  - task: AzureCLI@2
+    displayName: Terraform Destroy
+    inputs:
+      azureSubscription: 'YulongLab'
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      workingDirectory: '$(workingDirectory)'
+      inlineScript: |
+        terraform destroy -auto-approve
